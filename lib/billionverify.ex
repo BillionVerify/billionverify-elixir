@@ -300,19 +300,20 @@ defmodule BillionVerify do
 
   Pass the raw request body exactly as received, the `X-Webhook-Signature` header
   (`"sha256=<hex>"`), the `X-Webhook-Timestamp` header and your webhook secret. The
-  signed text is `"<timestamp>.<raw_body>"`. Returns `false` for a wrong signature
+  signed text is `"<timestamp>.<raw_body>"`. Returns `false` (never raises) for an empty
+  secret, a timestamp that is not a plain Unix-seconds integer, a wrong signature
   or a timestamp more than `:tolerance` seconds from now (default `300`; `0` turns
   the time check off). `:now` (Unix seconds) is for tests.
   """
   @spec verify_webhook_signature(binary(), String.t(), String.t(), String.t(), keyword()) ::
           boolean()
-  def verify_webhook_signature(raw_body, signature, timestamp, secret, opts \\ [])
-      when is_binary(raw_body) and is_binary(secret) do
+  def verify_webhook_signature(raw_body, signature, timestamp, secret, opts \\ []) do
     tolerance = Keyword.get(opts, :tolerance, 300)
     now = Keyword.get(opts, :now, System.os_time(:second))
 
-    with true <- is_binary(signature) and is_binary(timestamp),
-         {ts, ""} <- Integer.parse(String.trim(timestamp)),
+    with true <- is_binary(raw_body) and is_binary(signature) and is_binary(timestamp),
+         true <- is_binary(secret) and String.trim(secret) != "",
+         {:ok, ts} <- parse_timestamp(timestamp),
          true <- tolerance == 0 or abs(now - ts) <= tolerance do
       expected =
         "sha256=" <>
@@ -325,6 +326,15 @@ defmodule BillionVerify do
     else
       _ -> false
     end
+  end
+
+  # Unix seconds: 1 to 10 digits, nothing else (no sign, no spaces inside, no fraction).
+  defp parse_timestamp(timestamp) do
+    trimmed = String.trim(timestamp)
+
+    if Regex.match?(~r/\A[0-9]{1,10}\z/, trimmed),
+      do: {:ok, String.to_integer(trimmed)},
+      else: :error
   end
 
   # -- Domain search --------------------------------------------------------

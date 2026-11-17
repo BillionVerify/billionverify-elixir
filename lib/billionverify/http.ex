@@ -156,12 +156,23 @@ defmodule BillionVerify.HTTP do
       {:error, %Req.TransportError{reason: reason}} when reason in [:timeout, :connect_timeout] ->
         {:error, Error.new(:timeout, "Request timed out")}
 
+      {:error, %Req.TransportError{reason: reason}} ->
+        {:error, Error.new(:network, "Network error: #{inspect(reason)}")}
+
       {:error, %{__exception__: true} = exception} ->
-        {:error, Error.new(:network, "Network error: " <> Exception.message(exception))}
+        {:error, Error.new(:network, "Network error: " <> sanitize(Exception.message(exception)))}
     end
   rescue
     exception in [ArgumentError, File.Error] ->
-      {:error, Error.new(:validation, Exception.message(exception))}
+      {:error, Error.new(:validation, sanitize(Exception.message(exception)))}
+  end
+
+  # Error messages end up in logs: never let a URL's query string (a pre-signed
+  # download address carries its signature there) or fragment into one.
+  @doc false
+  @spec sanitize(String.t()) :: String.t()
+  def sanitize(message) do
+    Regex.replace(~r{(https?://[^\s?#"'<>]*)[?#][^\s"'<>]*}i, message, "\\1")
   end
 
   defp to_response(%Req.Response{status: status, headers: headers, body: body}) do

@@ -492,6 +492,53 @@ defmodule BillionVerifyTest do
                @secret
              )
     end
+
+    test "rejects an empty or blank secret even with a matching HMAC" do
+      ts = "1700000000"
+
+      for secret <- ["", "   ", "\n"] do
+        sig = sign(@body, ts, secret)
+        refute BillionVerify.verify_webhook_signature(@body, sig, ts, secret, now: 1_700_000_000)
+
+        refute BillionVerify.verify_webhook_signature(@body, sig, ts, secret,
+                 now: 1_700_000_000,
+                 tolerance: 0
+               )
+      end
+    end
+
+    test "rejects negative, fractional, signed, huge and non-integer timestamps without raising" do
+      huge = String.duplicate("9", 400)
+
+      for ts <- [
+            "-1",
+            "-1700000000",
+            "+1700000000",
+            "1700000000.5",
+            "1e9",
+            "0x10",
+            "",
+            " ",
+            "17000000000",
+            huge
+          ] do
+        sig = sign(@body, ts, @secret)
+
+        refute BillionVerify.verify_webhook_signature(@body, sig, ts, @secret,
+                 now: 1_700_000_000,
+                 tolerance: 0
+               )
+
+        refute BillionVerify.verify_webhook_signature(@body, sig, ts, @secret, now: 1_700_000_000)
+      end
+    end
+
+    test "returns false for non-binary arguments instead of raising" do
+      refute BillionVerify.verify_webhook_signature(@body, nil, "1700000000", @secret)
+      refute BillionVerify.verify_webhook_signature(@body, "sha256=x", nil, @secret)
+      refute BillionVerify.verify_webhook_signature(@body, "sha256=x", "1700000000", nil)
+      refute BillionVerify.verify_webhook_signature(nil, "sha256=x", "1700000000", @secret)
+    end
   end
 
   describe "domain search" do
@@ -690,6 +737,38 @@ defmodule BillionVerifyTest do
 
       assert {:error, %Error{type: :api, code: "INVALID_RESPONSE"}} =
                BillionVerify.get_credits(client)
+    end
+
+    test "error messages never carry a URL query string", %{client: client} do
+      assert BillionVerify.HTTP.sanitize(
+               "failed to connect to https://storage.example/results.csv?signature=SECRET&expires=9 (refused)"
+             ) == "failed to connect to https://storage.example/results.csv (refused)"
+
+      assert BillionVerify.HTTP.sanitize("see http://h.test/a#frag and https://h.test/b?x=1") ==
+               "see http://h.test/a and https://h.test/b"
+
+      assert BillionVerify.HTTP.sanitize("no urls here: a?b=c") == "no urls here: a?b=c"
+
+      # The second hop of a download goes to a pre-signed address; if it fails the
+      # message must not leak the signature.
+      Req.Test.stub(@stub, fn conn ->
+        case conn.host do
+          "api.test" ->
+            conn
+            |> put_resp_header("location", "https://storage.example/r.csv?signature=SECRET")
+            |> send_resp(307, "")
+
+          "storage.example" ->
+            Req.Test.transport_error(conn, :econnrefused)
+        end
+      end)
+
+      assert {:error, %Error{type: :network, message: message}} =
+               BillionVerify.download_file_results(client, "j1")
+
+      refute message =~ "SECRET"
+      refute message =~ "signature"
+      refute message =~ "?"
     end
 
     test "a timeout and a network failure", %{client: client} do
